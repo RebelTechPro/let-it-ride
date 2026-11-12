@@ -1,5 +1,5 @@
 // Offline cache for Let It Ride. Bump VERSION when any file changes.
-const VERSION = "lir-v2";
+const VERSION = "lir-v3";
 const FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./icon-maskable-512.png"];
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
