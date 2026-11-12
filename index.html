@@ -92,7 +92,7 @@ button:focus-visible{outline:3px solid #fff;outline-offset:2px}
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;text-align:center}
 .grid div{background:rgba(255,255,255,.04);border-radius:10px;padding:8px 4px}
 .grid b{display:block;font-size:17px;font-variant-numeric:tabular-nums}
-.grid span{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.grid > div > span{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
 .sub{margin:14px 0 6px;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)}
 
 table{width:100%;border-collapse:collapse;font-size:13px}
@@ -116,6 +116,16 @@ details summary::before{content:"▸ "}
 details[open] summary::before{content:"▾ "}
 .rules{font-size:14px;line-height:1.5;color:#e4ece6}
 .rules ul{padding-left:18px;margin:6px 0}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:16px;z-index:50;animation:fadeIn .35s ease .5s both}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.report{width:100%;max-width:520px;max-height:90vh;overflow:auto;background:#0d4a2f;border:2px solid rgba(232,196,106,.55);border-radius:20px;padding:16px;box-shadow:0 10px 40px rgba(0,0,0,.6)}
+.report h3{margin:0;font-family:Georgia,serif;color:var(--gold);font-size:22px}
+.report .rsub{font-size:13px;color:var(--muted);margin:2px 0 12px}
+.report .grid{grid-template-columns:repeat(2,1fr)}
+.report .line{font-size:14px;margin:10px 0 0;line-height:1.5}
+.report .btns{display:flex;gap:10px;justify-content:center;margin-top:16px;flex-wrap:wrap}
+.report .btns button{min-width:140px}
+.ghost{background:rgba(255,255,255,.1);color:var(--ink);border:1px solid rgba(255,255,255,.25)}
 @media (max-width:560px){.pays{grid-template-columns:1fr}.grid{grid-template-columns:repeat(2,1fr)}.hide-sm{display:none}}
 </style>
 </head>
@@ -157,6 +167,8 @@ details[open] summary::before{content:"▾ "}
     <div class="row"><span class="lbl">Bet per spot</span><div id="unitPicks" class="row" style="margin:0"></div></div>
     <div class="row"><span class="lbl">3-card bonus</span><div id="bonusPicks" class="row" style="margin:0"></div></div>
     <div class="row"><span class="lbl">Coach</span><button class="pick" id="hintToggle">On</button></div>
+    <div class="row"><span class="lbl">Progress report</span><div id="reportPicks" class="row" style="margin:0"></div>
+      <button class="pick" id="reportNowBtn">Report now</button></div>
     <div class="row"><span class="lbl">Bankroll</span>
       <button class="pick" id="resetBankBtn">Reset bankroll to $1,000</button>
       <button class="pick danger" id="eraseBtn">Erase all history</button>
@@ -204,6 +216,8 @@ details[open] summary::before{content:"▾ "}
   </div>
 </div>
 
+<div class="overlay hidden" id="reportOverlay" role="dialog" aria-modal="true" aria-labelledby="reportTitle"><div class="report" id="reportBox"></div></div>
+
 <script>
 (() => {
 "use strict";
@@ -244,7 +258,8 @@ const RANK_ORDER = PAY.map(p=>p.id);
 // k1/k2(coach said ride? 1/0), h(hand id|null), hn(hand name), bh(bonus hand id|null),
 // w(wagered), mp(main paid back incl. stake), bp(bonus paid back), n(net), b0/b1(bank before/after)
 const KEY = "letItRide.v2", OLD_KEY = "letItRide.v1";
-const defaults = () => ({v:2, bank:START_BANK, unit:10, bonus:0, hint:true,
+const REPORT_OPTS = [0,25,50,100,250];
+const defaults = () => ({v:2, bank:START_BANK, unit:10, bonus:0, hint:true, report:50, lastReport:0,
   nextId:1, hands:[], sessions:[], events:[], cur:null, g:null, legacy:null, created:Date.now()});
 let S = defaults();
 let storageOK = true, storageMsg = "";
@@ -252,7 +267,12 @@ let storageOK = true, storageMsg = "";
 function load(){
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw){ S = Object.assign(defaults(), JSON.parse(raw)); return; }
+    if (raw){
+      const d = JSON.parse(raw);
+      S = Object.assign(defaults(), d);
+      if (d.lastReport === undefined) S.lastReport = S.hands.length; // don't fire a report straight away for existing players
+      return;
+    }
     const old = localStorage.getItem(OLD_KEY);
     if (old){
       const o = JSON.parse(old);
@@ -473,6 +493,13 @@ function renderPicks(){
     bp.appendChild(b);
   });
   const h = $("hintToggle"); h.textContent = S.hint?"On":"Off"; h.classList.toggle("on",S.hint);
+  const rp = $("reportPicks"); rp.innerHTML="";
+  REPORT_OPTS.forEach(v=>{
+    const b=document.createElement("button"); b.className="pick"+(S.report===v?" on":""); b.textContent=v?"Every "+v:"Off";
+    b.onclick=()=>{ S.report=v; S.lastReport=S.hands.length; save(); renderPicks(); note(v ? `You'll get a report every ${v} hands.` : "Progress reports off."); };
+    rp.appendChild(b);
+  });
+  $("reportNowBtn").disabled = !S.hands.length;
   $("resetBankBtn").disabled = $("eraseBtn").disabled = $("importBtn").disabled = lock;
 }
 function renderPaytables(hitMain, hitBonus){
@@ -736,7 +763,55 @@ function settle(){
   renderBank(); renderStats();
   busy = false; updateControls();
   if (S.bank < 3*UNITS[0]) els.hint.textContent = "You're out of chips. Rebuy to keep playing.";
+  if (S.report && S.hands.length - S.lastReport >= S.report){
+    const from = S.lastReport; S.lastReport = S.hands.length; save();
+    showReport(S.hands.slice(from), false);
+  }
 }
+
+// ---------- progress report ----------
+function showReport(block, manual){
+  if (!block.length) return;
+  const a = aggregate(block), all = aggregate(S.hands);
+  const first = block[0], last = block[block.length-1];
+  const match = block.reduce((t,h)=>t+(h.r1===h.k1)+(h.r2===h.k2),0);
+  const rides = block.reduce((t,h)=>t+h.r1+h.r2,0);
+  const paying = PAY.filter(p=>a.byHand[p.id]).map(p=>`${p.name.replace(" or Better","+")} ×${a.byHand[p.id].n}`);
+  const toppedUp = S.events.some(e=>e.t>=first.t && e.t<=last.t+1);
+  const devs = block.filter(h=>h.r1!==h.k1||h.r2!==h.k2).length;
+  let verdict;
+  if (a.net>0 && a.ret/a.w > (all.ret/all.w||0)) verdict = "A good stretch — running hotter than your all-time average.";
+  else if (a.net>0) verdict = "Up for this stretch.";
+  else if (a.net===0) verdict = "Dead even for this stretch.";
+  else verdict = a.nopay/a.n > 0.8 ? "A cold run of cards — most hands didn't reach a paying hand." : "Down for this stretch.";
+  $("reportBox").innerHTML = `
+    <h3 id="reportTitle">${manual ? "Stats report" : "Progress report"}</h3>
+    <div class="rsub">Hands ${first.id.toLocaleString()}–${last.id.toLocaleString()} · ${a.n} hands · ${dt(first.t)} to ${dt(last.t)}</div>
+    <div class="grid">
+      ${tile(sgn(a.net),"Net")}${tile(fmt(a.w),"Wagered")}
+      ${tile(pct(a.ret,a.w),"Return rate")}${tile(pct(a.wins,a.n),"Winning hands")}
+      ${tile(a.bigWin && a.bigWin.n>0 ? sgn(a.bigWin.n) : "–","Biggest win")}${tile(a.bigLoss && a.bigLoss.n<0 ? sgn(a.bigLoss.n) : "–","Biggest loss")}
+      ${tile(a.best ? P[a.best.h].name.replace(" or Better","+") : "–","Best hand")}${tile(pct(match,2*a.n),"Matched coach")}
+    </div>
+    <div class="line"><b>${verdict}</b></div>
+    <div class="line">Bankroll ${fmt(first.b0)} → ${fmt(last.b1)}${toppedUp ? " (includes a rebuy or reset)" : ""}.
+      You let it ride on ${pct(rides,2*a.n)} of decisions${devs ? `, and went against the coach on ${devs} hand${devs>1?"s":""}` : ", always matching the coach"}.</div>
+    <div class="line">Paying hands: ${paying.length ? paying.join(" · ") : "none"} (${pct(a.n-a.nopay,a.n)} of hands).</div>
+    ${a.bonusW ? `<div class="line">3-card bonus: ${sgn(a.bonusRet-a.bonusW)} on ${fmt(a.bonusW)} bet.</div>` : ""}
+    <div class="line" style="color:var(--muted)">All time: ${all.n.toLocaleString()} hands, ${sgn(all.net)} net, ${pct(all.ret,all.w)} return rate.</div>
+    <div class="btns">
+      <button class="primary" id="repClose">Keep playing</button>
+      <button class="ghost" id="repStats">Full stats</button>
+    </div>`;
+  const ov = $("reportOverlay");
+  ov.style.animationDelay = manual ? "0s" : ".5s";
+  ov.classList.remove("hidden");
+  $("repClose").onclick = closeReport;
+  $("repStats").onclick = ()=>{ closeReport(); tab="overview"; renderStats(); $("statBody").scrollIntoView({behavior:"smooth", block:"start"}); };
+  setTimeout(()=>{ try{ $("repClose").focus({preventScroll:true}); }catch(e){} }, manual ? 0 : 550);
+}
+function closeReport(){ $("reportOverlay").classList.add("hidden"); }
+const reportOpen = () => !$("reportOverlay").classList.contains("hidden");
 
 function topUp(type){
   const b0 = S.bank;
@@ -784,7 +859,7 @@ function importJSON(file){
     try {
       const d = JSON.parse(fr.result);
       if (!d || !Array.isArray(d.hands) || !Array.isArray(d.sessions) || typeof d.bank!=="number") throw 0;
-      S = Object.assign(defaults(), d); S.g = null;
+      S = Object.assign(defaults(), d); S.g = null; S.lastReport = S.hands.length;
       pruneEmpty(); startSession("open"); save();
       G = {phase:"idle"}; renderAll();
       note(`Restored ${S.hands.length.toLocaleString()} hands and a ${fmt(S.bank)} bankroll.`);
@@ -813,11 +888,13 @@ armed($("eraseBtn"), "Tap again to erase everything", ()=>{
   setMsg("Fresh start.", "Bankroll reset to $1,000 and all history erased.");
   note("All history erased.");
 });
+$("reportNowBtn").onclick = ()=>{ const n = S.report || 50; showReport(S.hands.slice(-n), true); };
 $("exportCsvBtn").onclick = exportCSV;
 $("exportJsonBtn").onclick = exportJSON;
 $("importBtn").onclick = ()=>$("importFile").click();
 $("importFile").onchange = e => { const f = e.target.files[0]; if (f) importJSON(f); e.target.value = ""; };
 document.addEventListener("keydown", e=>{
+  if (reportOpen()){ if (e.key==="Escape"){ e.preventDefault(); closeReport(); } return; }
   if (e.target.tagName==="INPUT" || e.target.tagName==="BUTTON" && (e.key===" "||e.key==="Enter")) return;
   const k = e.key.toLowerCase();
   if ((k===" "||k==="enter") && (G.phase==="idle"||G.phase==="done")){ e.preventDefault(); deal(); }
